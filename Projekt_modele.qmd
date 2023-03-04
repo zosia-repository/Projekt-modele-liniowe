@@ -1,0 +1,634 @@
+---
+title: "Analiza zbioru danych Bodyfat "
+format: 
+  html:
+    theme: cosmo
+    self-contained: true
+    self-contained-math: true
+    html-math-method: katex
+    toc: true
+    css: styles.css
+    toc-title: Etapy projektu
+    code-fold: true
+    code-summary: "Code"
+editor: visual
+editor_opions:
+  chunk_ouput_type: console
+---
+
+```{r, message = FALSE, warning=FALSE, r, echo = FALSE}
+library(tidyverse)
+library(ggfortify)
+library(knitr)
+library(ggplot2)
+library(lmtest)
+library(rstatix)
+library(kableExtra)
+library(FactoMineR)
+library(ade4)
+library(factoextra)
+library(ExPosition)
+library(corrplot)
+library(dplyr)
+library(boot)
+```
+
+# Słowem wstępu
+
+```{r, echo = FALSE}
+knitr::include_graphics("1.jpg")
+```
+
+Dane pochodzą ze strony internatowej `Kaggle.com` ze zbioru danych `Bodyfat`.
+
+Dane wymieniają szacunkowe wartości procentowe tkanki tłuszczowej mierzone pod wodą, wagę i pomiary różnych obwodów ciała 252 mężczyzn.
+
+```{r, echo=FALSE, mesage = FALSE, warning=FALSE, show_col_types = FALSE}
+dane <- read_csv("bodyfat.csv")
+round(head(dane),2) %>% 
+  kable()
+```
+
+## Objaśnienie zmiennych zbioru danych:
+
+-   `Density` - Gęstość wyznaczona na podstawie ważenia pod wodą
+
+-   `BodyFat` - Procent tkanki tłuszczowej z równania Siri (1956)
+
+-   `Age` - Wiek (lata)
+
+-   `Weight` - Waga (w funtach)
+
+-   `Height` - Wysokość (cale)
+
+-   `Neck` - Obwód szyi (cm)
+
+-   `Chest` - Obwód klatki piersiowej (cm)
+
+-   `Abdomen` - Obwód brzucha (cm)
+
+-   `Hip` - Obwód bioder (cm)
+
+-   `Thigh` - Obwód uda (cm)
+
+-   `Knee` - Obwód kolana (cm)
+
+-   `Ankle` - Obwód kostki (cm)
+
+-   `Biceps` - Obwód bicepsa (cm)
+
+-   `Forearm` - Obwód przedramienia (cm)
+
+-   `Wrist` - Obwód nadgarstka (cm)
+
+::: {.callout-tip appearance="default"}
+## Równanie Siri:
+
+$\hspace{0.8cm}$ $Fat(\%) = \frac{495}{density}-450$
+:::
+
+Przekształcimy wagę z futów na kilogramy i wysokość w calach na cm według standardu środkowo-europejskigo.
+
+```{r}
+dane["Weight2"] <- round(dane$Weight*0.435,2)
+
+dane["Height2"] <- round(dane$Height*2.54,2)
+```
+
+Dodamy kolumnę ID dla łatwiejszej obróbki danych.
+
+```{r}
+ID <- c(1:length(dane$Density))
+dane <- cbind("ID" = ID, dane)
+```
+
+Również dodamy nową kolumnę **BMI** - to wskaźnik masy ciała, który każdy jest w stanie wyznaczyć i zinterpretować w której kategorii znajduje się jego wynik: niedowaga, waga prawidłowa, nadwaga i otyłość. Uważamy, że nowa zmienna BMI będzie dobrym dopełnieniem naszego zbioru danych.
+
+```{r, echo = FALSE, fig.dim = c(8, 14)}
+knitr::include_graphics("4.jpg")
+```
+
+```{r dodanie wskaznika BMI}
+dane["BMI"] <- round(dane$Weight2/(dane$Height2/100)^2)
+```
+
+Dodamy kolumnę `category` dla zmiennej `BMI`, która ma 3 stany:
+
+-   za niska
+-   w normie
+-   za wysoka
+
+```{r}
+dane["Category"] <- as.factor(ifelse(dane$BMI< 20.1, '1',
+                              ifelse(dane$BMI< 25.9, '2','3')))
+```
+
+Dodamy też kategorie dla zmiennej `BodyFat`.
+
+```{r}
+dane["Category2"] <- as.factor(ifelse(dane$BodyFat< 11, '1',
+                              ifelse(dane$BodyFat< 24, '2','3')))
+```
+
+Sprawdzimy czy mamy braki danych w poszczególnych kolumnach:
+
+```{r}
+apply(dane, 2, function(x) sum(is.na(x)))
+```
+
+Nie mamy braków danych w zbiorze. Kolejnym krokiem będzie wyznaczenie podstawowych statystyk (bez kolumny ID):
+
+```{r}
+summary(dane[,-1])
+```
+
+Zauważyłyśmy, że wartość minimalna zmiennej `BodyFat` jest równa 0. Przyjrzymy się tej obserwacji.
+
+```{r}
+dane %>% 
+  filter(BodyFat == 0)
+```
+
+Przypuszczamy, że to może być błąd we wprowadzeniu danych.
+
+```{r}
+495/(dane[182,"Density"])-450
+```
+
+Obliczając poziom tłuszczu z równania Siri uzyskałyśmy wartość ujemną, co oznacza, że `wzór Siri` nie jest optymalny dla każdego przypadku. Ze względu na możliwą do uzyskania wysokość i wagę zostawiamy obserwację w zbiorze danych ze zmienionym poziomem tłuszczu.
+
+```{r}
+dane[182,2] <- 495/(dane[182,"Density"])-450
+```
+
+Przedstawimy podstawowe statystyki danych w bardziej zgrabnej formie:
+
+```{r, mesage = FALSE, warning=FALSE}
+st_op <- round(apply(dane[,c(1,2,3,8,16,17,18)],2,summary),2)
+st_op <- rbind(st_op,St.dev=apply(dane[,c(1,2,3,8,16,17)],2,sd))
+colnames(st_op) <- c("Density", "BodyFat","Age" ,"Abdomen", "Weight", "Height", "BMI")
+rownames(st_op) <- c('minimum','kwantyl dolny','mediana','średnia','kwantyl górny','maksimum','odchylenie standardowe')
+as.data.frame(round(st_op,2)) %>%
+kable(caption="Statystyki zbioru")
+```
+
+Przedstawimy również graficzną prezentację rozkładów :
+
+```{r, message=FALSE, warning=FALSE}
+ggplot(dane, aes(x=Weight2)) + geom_histogram(color="gray47", fill="navajowhite2") + scale_x_continuous(breaks=seq(50, 160, 10)) +
+  labs(title = "Histogram wagi [kg]", x = "Waga [kg]", y = "Liczebność") + theme_bw()
+```
+
+```{r, message=FALSE, warning=FALSE}
+ggplot(dane, aes(x=Height2)) + geom_histogram(color="gray47", fill="navajowhite2") + scale_x_continuous(breaks=seq(74, 204, 10)) +
+  labs(title = "Histogram wzrostu [cm]", x = "Wzrost [cm]", y = "Liczebność") + theme_bw()
+```
+
+Na wykresach widzimy, że niektóre obserwacje znacznie wychodzą poza tendencję, w dalszym ciągu zobaczymy jak to wpłynie na wyniki.
+
+Ze statystyk opisowych odczytałyśmy wartość maksymalną BMI, która wyniosła 159. Wyświetlimy obserwację posiadającą niemożliwy poziom wskaźnika masy ciała:
+
+```{r}
+dane[which(dane$BMI == 159), c("ID","Weight2", "Height2", "Age")]
+```
+
+Jest ona najprawdopodobniej pomyłką we wprowadzaniu danych, przejrzymy się tej obserwacji w dalszych analizach.
+
+Na koniec przedstawimy wykresy, który ilustrują podział wskaźnika masy ciała i poziomu tłuszczu na kategorie: `za niska`, `w normie`, `za wysoka`.
+
+```{r, message = FALSE, warning=FALSE}
+dane[,-1] %>% 
+   ggplot(aes(x = Category))+
+   geom_bar(color = "gray70", fill = c("wheat1", "wheat2", "wheat3"))+
+  scale_fill_manual("legend", values = c("za niska" = "black", "w normie" = "orange", "za wysoka" = "blue"))+
+   theme(axis.text.x = c("niska", "w normie", "za wysoka"))+
+   labs(title = "Rozkład BMI", x = "kategoria wagi", y = "liczebność")+
+   scale_x_discrete(labels = c("za niska","w normie","za wysoka"))+
+   guides(fill=guide_legend(title="kategoria"))+
+   scale_fill_discrete(breaks=c("1", "2", "3"), labels=c("za niska", "w normie", "za wysoka"))+
+   theme_minimal()
+```
+
+Najbardziej liczną jest grupa z prawidłową masą ciała. Tylko 29 osób z badanych 252 mieści się w kategorii BMI poniżej normy.
+
+```{r, message = FALSE, warning=FALSE}
+dane[,-1] %>% 
+   ggplot(aes(x = Category2))+
+   geom_bar(color = "gray70", fill = c("wheat1", "wheat2", "wheat3"))+
+  scale_fill_manual("legend", values = c("za niska" = "black", "w normie" = "orange", "za wysoka" = "blue"))+
+   theme(axis.text.x = c("niska", "w normie", "za wysoka"))+
+   labs(title = "Rozkład BodyFat", x = "kategoria poziomu tłuszczu", y = "liczebność")+
+   scale_x_discrete(labels = c("za niska","w normie","za wysoka"))+
+   guides(fill=guide_legend(title="kategoria"))+
+   scale_fill_discrete(breaks=c("1", "2", "3"), labels=c("za niska", "w normie", "za wysoka"))+
+   theme_minimal()
+```
+
+Rozkład poziomu tłuszczu w grupie badanych mężczyzn zachowuje się podobnie jak rozkład BMI.
+
+```{r, iclude = FALSE}
+dane <- dane[,-21]
+```
+
+# Hipotezy
+
+1)  Czy poszczególne obwody: szyja, klatka piersiowa, brzuch, biodra, uda, kolana, kostka, biceps, przedramię i nadgarstek mają wpływ na BMI?
+
+2)  Czy poszczególne miary: obwody klatki piersiowej, brzucha, bioder, uda, kolana, kostki, bicepsa, przedramienia, nadgarstka, wiek, waga i wzrost mają wpływ na poziom tłuszczu?
+
+# Funkcje
+
+```{r echo = TRUE, results = "hide"}
+gauss_markov <- function(mod) { 
+  tabelka <- NULL
+  wiersz <- NULL
+  bp <- bptest(mod)
+  gq <- gqtest(mod)
+  dw <- dwtest(mod)
+  bg <- bgtest(mod, order.by = ~fitted(mod), order = 3)
+  sh <- shapiro.test(mod$residuals)
+  ks <- ks.test(mod$residuals, "pnorm")
+  lil <- nortest::lillie.test(mod$residuals)
+  res <- resettest(mod, type = "regressor")
+  rai <- raintest(mod)
+  har <- harvtest(mod) 
+  w <- c(bp$p.value, gq$p.value, dw$p.value, bg$p.value, sh$p.value, ks$p.value, lil$p.value, res$p.value, rai$p.value, har$p.value)
+  h0 <- c("jednorodność wariancji", "jednorodność wariancji", "brak autokorelacji reszt","brak autokorelacji do rzędu 3","rozklad reszt jest normalny", "rozklad reszt  jest normalny", "rozklad reszt  jest normalny", "zależność jest liniowa", "zależność jest liniowa", "zależność jest liniowa")
+  h1 <- c("brak jednorodności wariancji", "brak jednorodności wariancji", "występuje autokorelacja reszt", "występuje autokorelacja rzędu 3", "rozklad reszt nie jest normalny", "rozklad reszt nie jest normalny", "rozklad reszt nie jest normalny", "brak zależności liniowej", "brak zależności liniowej", "brak zależności liniowej")
+  n <- c("Test Breuscha-Pagana", "Test Goldfelda-Quandta", "Test Durbina-Watsona", "Test Breuscha-Godfreya", "Test Shapiro-Wilka", "Test Kolmogorova-Smirnova", "Test Lillieforsa", "Test RESET Ramseya", "Test Rainbow Uttsa", "Test Harveya-Colliera")
+  for (i in 1:length(w)) {
+    wiersz <- c(n[i], round(w[i], 3), 
+                if (w[i]<0.05) {
+                  h1[i]} else {h0[i]} )
+    tabelka <- rbind(tabelka, wiersz)
+  }
+
+  colnames(tabelka) <- c("Nazwa testu", "P-wartość", "Wniosek")
+  rownames(tabelka) <- c(1:length(n))
+  tabelka %>% 
+    kable(caption="Założenia Gaussa Markowa")
+}
+```
+
+```{r echo = TRUE, results = "hide"}
+odstajace <- function(mod, dane, stopien) { 
+h <- hatvalues(mod)[hatvalues(mod) > 2*3/nrow(dane)] %>% as.data.frame()
+h <- rownames(h)
+rsr <- rstandard(mod)[abs(rstandard(mod)) > 2] %>% as.data.frame()
+rsr <- rownames(rsr)
+rst <- rstudent(mod)[abs(rstudent(mod)) > 3] %>% as.data.frame()
+rst <- rownames(rst)
+c <- cooks.distance(mod)[cooks.distance(mod) > 4/nrow(dane)] %>% as.data.frame()
+c <- rownames(c)
+w <- c(h, rsr, rst, c)
+b <- unique(w)
+counts <- NULL
+for (i in 1:length(b)) {
+  counts <- c(counts, sum(w==b[i]))
+}
+counts <- cbind(b, counts)
+a <- c("obserwacja", "ile spełnia kryteriów")
+counts <- counts[which(counts[,2]>=stopien),] 
+colnames(counts) <- a
+counts %>%  kable(caption="Obserwacje odstające")
+}
+```
+
+```{r echo = TRUE, results = "hide"}
+odstajace_col <- function(dat){
+  a <- c()
+for(i in c(7:16, 19)) {
+  a <- c(a, dat %>% identify_outliers(colnames(dat)[i]) %>% select(ID))
+}
+names(a) <- colnames(dat)[c(7:16, 19)]
+print(a)
+a <- plyr::ldply(a, data.frame)
+repetitions <- names(which(table(a[,2])>=5))
+print("Obserwacje występujące co najmniej 5 razy: ")
+print(repetitions)
+}
+```
+
+# Hipoteza 1
+
+BMI to inaczej wskaźnik masy ciała - z angielskiego body mass index - jest to współczynnik powstały przez podzielenie masy ciała podanej w kilogramach przez kwadrat wysokości podanej w metrach. Klasyfikacja wskaźnika BMI została opracowana wyłącznie dla dorosłych.
+
+$$ BMI = \frac{masa[kg]}{wysokość^2[m]}$$
+
+```{r, echo FALSE, fig.align = "center"}
+knitr::include_graphics("bmi.jpg")
+```
+
+## Model pierwszy
+
+$\hat{BMI} = \beta_{0} + \beta_{1} \cdot Neck + \beta_{2} \cdot Chest + \beta_{3} \cdot Abdomen + \beta_{4} \cdot Hip + \beta_{5} \cdot Thigh + \beta_{6} \cdot Knee + \beta_{7} \cdot Ankle + \beta_{8} \cdot Biceps + \beta_{9} \cdot Forearm + \beta{10} \cdot Wrist$
+
+```{r}
+model <- lm(BMI~Neck+Chest+Abdomen+Hip+Thigh+Knee+Ankle+Biceps+Forearm+Wrist, data=dane)
+summary(model)
+```
+
+```{r}
+summary(dane$BMI-model$fitted.values)
+```
+
+Mediana jest mniejsza od średniej to rozkład reszt jest prawostronnie asymetryczny.
+
+Wykresy diagnostyczne:
+
+```{r}
+autoplot(model)
+```
+
+### Założenia Gaussa Markowa
+
+```{r}
+gauss_markov(model)
+```
+
+Budując model pełny otrzymałyśmy skorygowany $R^2$ równy 0.21, przyjrzałyśmy się wykresom i zauważyłyśmy, że obserwacja 42 jest nietypowa. Sprawdzimy, czy tak jest na prawdę.
+
+```{r}
+odstajace(model, dane = dane, 2)
+```
+
+Z powyższego zestawienia widać, że obserwacja 42 może wpływać na to, że nasz model nie spełnia założeń. Sprawdźmy czy w wyniku usuwania jej ze zbioru, nasz model się poprawi.
+
+## Model drugi
+
+```{r}
+dane2 <- dane[-42,]
+model2 <- lm(BMI~Neck+Chest+Abdomen+Hip+Thigh+Knee+Ankle+Biceps+Forearm+Wrist, data=dane2)
+summary(model2)
+```
+
+```{r}
+summary(dane2$BMI-model2$fitted.values)
+```
+
+Mediana jest bardzo bliska 0, co wskazuję, na brak asymetrii.
+
+Sprawdzimy jak wyglądają wykresy diagnostyczne:
+
+```{r}
+autoplot(model2)
+```
+
+Z wykresów diagnostycznych raczej spodziewamy się niejednorodności wariancji i braku normalności rozkładu reszt. Sprawdzamy to za pomocą testów.
+
+### Założenia Gaussa Markowa
+
+```{r}
+gauss_markov(model2)
+```
+
+Po sprawdzeniu założeń dochodzimy do wniosku, że jednak większa część z nich na razie nie jest spełniona. Sprawdzimy obserwacje odstające dla poszczególnych zmiennych:
+
+```{r}
+odstajace_col(dane)
+```
+
+Zauważyłyśmy, że obserwacje 39, 41 są odstające prawie dla każdej zmiennej. Również obserwacja 39 jest w każdej statystyce rozpatrywanej w funkcji `odstajace()`. Sprawdzimy jak model będzie wygłądać bez tych obserwacji:
+
+```{r}
+dane3 <- dane[-c(39,41,42),]
+```
+
+Po wyczyszczeniu danych rozdzielamy nasz zbior na testowy i uczący.
+
+```{r}
+ID <- c(1:length(dane$Density))
+dane <- cbind("ID" = ID, dane)
+set.seed(221)
+wektor <- sample(1:249, 180, replace = FALSE)
+uczacy <- dane3[wektor,]
+testowy <- dane3[-wektor,]
+```
+
+Dalsze analizy będziemy przeprowadzać na zbiorze uczącym.
+
+## Model trzeci
+
+```{r}
+model3 <- lm(BMI~Chest+Neck+Abdomen+Hip+Thigh+Knee+Ankle+Biceps+Forearm, data=uczacy)
+summary(model3)
+```
+
+Możemy zauważyć, że prawdziwe BMI odchyla się od linii regresji średnio o około 1 jednostkę.
+
+```{r, warning=FALSE}
+summary(dane3$BMI-model3$fitted.values)
+```
+
+```{r}
+autoplot(model3)
+```
+
+Wykresy diagnostyczne wyglądają lepiej, niż w poprzednim modelu, spodziewamy się, że większość zalożeń będzie spełnionych.
+
+### Założenia Gaussa Markowa
+
+```{r}
+gauss_markov(model3)
+```
+
+W kolejnym kroku po zbudowaniu pełnego modelu przejrzymy się czy da się nasz model ulepszyć, widzimy, że model posiada 9 zmiennych, co jest sporo, chcemy zredukować je ilość za pomocą metody PCA, którą przedstawiamy poniżej:
+
+Najpierw sprawdzamy korelację zmiennych:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, error = FALSE, fig.dim = c(8, 10)}
+corrplot(cor(uczacy[,-c(1:6,16:20)]), 
+         type = "upper", 
+         order = "original", 
+         method = "shade",
+         tl.col = "black", 
+         tl.srt = 45,
+         addCoef.col = "black",
+         diag = FALSE)
+```
+
+Widać, że niektóre zmienne są mocno skorelowane, więc PCA będzie tutaj dobrym wyborem:
+
+```{r}
+model3.pca <- prcomp(uczacy[,-c(1:6,16:20)], scale = T)
+summary(model3.pca)
+```
+
+```{r}
+fviz_eig(model3.pca, addlabels = TRUE)
+```
+
+```{r}
+fviz_contrib(model3.pca, choice = "var", axes = 9)
+```
+
+Widzimy, że pierwsze 3 składowych już dałyby nam niemal 86% wyjaśnionej wariancji, co byłoby zgodnie z kryterium.
+
+Tworzymy zmienne PC1,PC2,PC3.
+
+```{r}
+PC1 <- model3.pca$x[,1]
+PC2 <- model3.pca$x[,2]
+PC3 <- model3.pca$x[,3]
+```
+
+```{r}
+model3_2 <- lm(BMI~PC1+PC2+PC3, data=uczacy)
+summary(model3_2)
+gauss_markov(model3_2)
+```
+
+$R^2$ tego modelu to 0.85 Założenia Gaussa-Markowa z różnych testów troszkę się polepszyły.
+
+## Model zagnieżdżony
+
+```{r}
+mod_0 <- lm(BMI~1, data = uczacy)
+met_tyl <- stats::step(model3, scope = c(mod_0, model3),
+                  direction = 'backward', test = 'F', trace = 0)
+met_tyl$coefficients
+```
+
+```{r}
+model_zag <- lm(BMI~Chest+Abdomen+Thigh+Knee+Forearm, data=uczacy)
+summary(model_zag)
+```
+
+Z podsumowania można wnioskować, że prawdziwe BMI odchyla się od linii regresji średnio o około 1 jednostkę, tak samo jak w modelu pełnym.
+
+```{r}
+summary(uczacy$BMI-model_zag$fitted.values)
+```
+
+### Założenia Gaussa Markowa
+
+```{r}
+gauss_markov(model_zag)
+```
+
+```{r}
+autoplot(model_zag)
+```
+
+```{r}
+anova(model3, model_zag)
+```
+
+Na podstawie analizy wariancji przyjmujemy, że model prostszy jest lepszy.
+
+## Predykcja
+
+```{r}
+pred <- round(predict(model_zag,testowy),1)
+fakt <- testowy[,c(1,19)]
+```
+
+```{r}
+
+cbind(pred, fakt = fakt$BMI) %>% 
+ggplot(aes(x = pred, y = fakt))+
+  geom_point()+
+  geom_smooth()
+```
+
+## Podsumowanie
+
+Postać modelu:
+
+$\hat {BMI} = -9.49 + 0.14*Chest + 0.13*Abdomen + 0.15*Thigh - 0.16*Knee + 0.14*Forearm$
+
+Nasz model wyjaśnia niemal 89% wariancji. Zmienne wchodzące w skład modelu to obwody: klatka piersiowa, brzuch, uda, kolana i przedramię. Wskazuje to na dużą zależność tych miar ze wskaźnikiem masy ciała. Oznacza to, że dla przeciętnych mężczyzn wskaźnik ten jest wystarczająco dobrą miarą aby określić swój stan fizyczny. Pamiętajmy jednak, że przy dużej objętości tkanki mięśniowej nie jest on miarodajny i raczej wybralibyśmy procentowy wskaźnik poziomu tłuszczu.
+
+# Hipoteza 2
+
+Czy poszczególne miary: obwody klatki piersiowej, brzucha, bioder, uda, kolana, kostki, bicepsa, przedramienia, nadgarstka, wiek, waga i wzrost mają wpływ na poziom tłuszczu?
+
+```{r}
+ggplot(dane3,aes(x=BodyFat,y=Weight2)) + geom_point() + theme_bw() + ggtitle("Zależność % tkanki tłuszczowej i wagi") +
+  geom_smooth(method='lm') + ggpubr::stat_regline_equation(label.x = 5, label.y = 250)
+```
+
+```{r}
+ggplot(dane3,aes(x=BodyFat,y=Abdomen)) + geom_point() + theme_bw() + ggtitle("Zależność % tkanki tłuszczowej i obwodu brzucha") +
+  geom_smooth(method='lm') + ggpubr::stat_regline_equation(label.x = 5, label.y = 115)
+```
+
+## Model pierwszy
+
+$\hat{BodyFat} = \beta_{0} + \beta_{1} \cdot Chest + \beta_{2} \cdot Abdomen + \beta_{3} \cdot Hip + \beta_{4} \cdot Thigh + \beta_{5} \cdot Knee + \beta_{6} \cdot Ankle + \beta_{7} \cdot Biceps + \beta_{8} \cdot Forearm + \beta_{9} \cdot Age + \beta{10} \cdot Weight2 + \beta{11} \cdot Height2+\beta{12} \cdot Wrist$
+
+```{r}
+model <- lm(BodyFat~Chest+Abdomen+Hip+Thigh+Knee+Ankle+Biceps+Forearm+Age+Weight2+Height2+Wrist, data=uczacy)
+summary(model)
+```
+
+```{r}
+summary(uczacy$BodyFat-model$fitted.values)
+```
+
+### Założenia Gaussa Markowa
+
+```{r}
+gauss_markov(model)
+```
+
+## Model zagniezdżony
+
+```{r}
+mod_0 <- lm(BodyFat~1, data = uczacy)
+met_tyl <- stats::step(model, scope = c(mod_0, model),
+                  direction = 'backward', test = 'F', trace = 0)
+met_tyl$coefficients
+```
+
+```{r}
+model_zag <- lm(BodyFat~Abdomen+Thigh+Weight2+Wrist, data=uczacy)
+summary(model_zag)
+```
+
+Możemy zauważyć, że prawdziwy poziom tłuszczu odchyla się od linii regresji średnio o około 4 punkty procentowe.
+
+```{r}
+summary(uczacy$BodyFat-model_zag$fitted.values)
+```
+
+```{r}
+autoplot(model_zag)
+```
+
+### Założenia Gaussa Markowa
+
+```{r}
+gauss_markov(model_zag)
+```
+
+Zauważamy, że R dopasowane jest zbliżone w modelu zagnieżdżonym do R dopasowanego w modelu pełnym. Oba modele spełniają wszystkie założenia, jedynie test Kołmogorowa - Smirnova wykazuje brak normalności rozkładu reszt. Wszystkie zmienne wchodzące w skład modelu zagnieżdżonego są istotne statystycznie, więc skłanialibyśmy się ku modelowi zagnieżdżonemu.
+
+```{r}
+anova(model, model_zag)
+```
+
+Na podstawie analizy wariancji stwierdzamy, że model prostszy jest lepszy.
+
+## Predykcja
+
+```{r}
+pred <- round(predict(model_zag,testowy),1)
+fakt <- testowy[,c(1,3)]
+```
+
+```{r}
+
+cbind(pred, fakt = fakt$BodyFat) %>% 
+ggplot(aes(x = pred, y = fakt))+
+  geom_point()+
+  geom_smooth()
+```
+
+### Podsumowanie
+
+Postać modelu:
+
+$\hat {BodyFat} = -41.85 + 0.92*Abdomen + 0.35*Thigh - 0.31*Weight2 - 1.09*Wrist$
+
+Nasz model wyjśnia ponad 74% wariancji. Miary wchodzące w skład modelu to obwody: brzuch, uda, nadgarstek oraz waga w kilogramach, dzięki czemu każdy (mężczyzna) może łatwo sobie wyznaczyć procentowy poziom tłuszczu i sprawdzić do jakiej kategori należy. Pomaga to w kontrolowaniu kondycji fizycznej, która ma wysoki wpływ na zdrowie człowieka.
